@@ -3,10 +3,11 @@ import { useEffect, useRef, useState } from "react";
 import { Animated, Pressable, ScrollView, Text, View } from "react-native";
 import { useShallow } from "zustand/react/shallow";
 import { switchProfile } from "../../lib/actions";
-import { useTheme } from "../../lib/theme";
+import { layout, useTheme } from "../../lib/theme";
 import { useBrowser } from "../../store/browser";
 import { useIsIncognito } from "../../store/hooks";
 import { usePagerPages, type PagerPage } from "../layout/profilePager";
+import { SIDEBAR_FOOTER_DOWNLOADS } from "../layout/windowLayout";
 import { useHover } from "../primitives";
 import { profileSymbol } from "./icons";
 
@@ -43,7 +44,7 @@ export function ProfileDots({ windowId, downloads = false }: { windowId: string;
   return (
     <View style={{ height: PROFILE_DOTS_HEIGHT, alignItems: "center" }}>
       {icons ? (
-        <View style={{ alignSelf: "stretch", marginLeft: downloads ? 42 : 8, marginRight: 8, marginTop: (PROFILE_DOTS_HEIGHT - 3 - BAND) / 2, height: BAND }}>
+        <View style={{ alignSelf: "stretch", marginLeft: downloads ? layout.sidebarInset + SIDEBAR_FOOTER_DOWNLOADS.size + 2 : 8, marginRight: 8, marginTop: (PROFILE_DOTS_HEIGHT - 3 - BAND) / 2, height: BAND }}>
           <ScrollView
             ref={scroll}
             horizontal
@@ -86,7 +87,7 @@ function Dot({ id, windowId, page, pos, icons }: { id: string; windowId: string;
                 {symbol ? (
                   <Symbol name={symbol} size={ICON} weight="semibold" color={color} style={{ width: ICON, height: ICON + 2 }} />
                 ) : (
-                  <Text numberOfLines={1} style={{ fontSize: ICON, fontWeight: "600", color }}>{profile?.icon ?? (name.trim()[0] ?? "?").toUpperCase()}</Text>
+                  <Text numberOfLines={1} style={{ fontSize: ICON, fontWeight: "600", color }}>{profile?.icon ?? (Array.from(name.trim())[0] ?? "?").toUpperCase()}</Text>
                 )}
               </Animated.View>
               <Animated.View style={{ position: "absolute", bottom: 1, width: 10, height: 2, borderRadius: 1, backgroundColor: color, opacity: underline }} />
