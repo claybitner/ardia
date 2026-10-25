@@ -1,7 +1,7 @@
 import { appUrlOrigin, displayHost } from "@ardia/core";
 import type { BrowserState } from "./browser";
 import { DEFAULT_PROFILE_ID } from "./settings";
-import type { BrowserWindow, Profile, Tab, TabLive, TabSnapshot } from "./types";
+import type { BrowserWindow, Profile, Tab, TabGroup, TabLive, TabSnapshot } from "./types";
 
 
 const launch = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -72,7 +72,7 @@ export function makeTab(windowId: string, profileId: string, url = "", snapshot?
 }
 
 export function wake(t: Tab): Partial<Tab> {
-  return t.wakeAdoptId ? { adoptId: t.wakeAdoptId, wakeAdoptId: undefined } : { navigation: navigationTo(t.url) };
+  return t.wakeAdoptId ? { adoptId: t.wakeAdoptId, wakeAdoptId: undefined, unloaded: undefined } : { navigation: navigationTo(t.url), unloaded: undefined };
 }
 
 export const snapshotTab = (t: Tab): TabSnapshot => ({
@@ -86,19 +86,24 @@ export const snapshotTab = (t: Tab): TabSnapshot => ({
   customIcon: t.customIcon,
   pinnedUrl: t.pinnedUrl,
   ...(isPinnedRow(t) ? { pinnedAsRow: true as const } : {}),
+  ...(t.tileFolder && pinSection(t) === "tile" ? { tileFolder: t.tileFolder } : {}),
   profileId: t.profileId,
 });
 
 export const isPinnedRow = (t: Pick<Tab, "pinned" | "pinnedAsRow"> | undefined): boolean => !!t?.pinned && !!t.pinnedAsRow;
+export const pinnedSectionTitle = (s: BrowserState, tab: Pick<Tab, "profileId"> | undefined) => `Pinned in ${s.profiles[tab?.profileId ?? ""]?.name ?? "Profile"}`;
+export const togglePinTitle = (tab: Pick<Tab, "pinned" | "pinnedAsRow"> | undefined) => (isPinnedRow(tab) ? "Unpin" : tab?.pinned ? "Unpin from Top Apps" : "Move to Top Apps");
 
 export type PinSection = "tile" | "row" | "none";
 export const pinSection = (t: Pick<Tab, "pinned" | "pinnedAsRow"> | undefined): PinSection => (!t?.pinned ? "none" : t.pinnedAsRow ? "row" : "tile");
 
-export function pinnedFirst(ids: string[], tabs: Record<string, Tab>): string[] {
+export function pinnedFirst(ids: string[], tabs: Record<string, Tab>, groups?: Record<string, TabGroup>): string[] {
+  const pinnedGroup = new Set(groups ? Object.values(groups).filter((g) => g.pinned).flatMap((g) => g.tabIds) : []);
+  const pinnedArea = (id: string) => pinSection(tabs[id]) === "row" || (!tabs[id]?.pinned && pinnedGroup.has(id));
   return [
     ...ids.filter((id) => pinSection(tabs[id]) === "tile"),
-    ...ids.filter((id) => pinSection(tabs[id]) === "row"),
-    ...ids.filter((id) => !tabs[id]?.pinned),
+    ...ids.filter(pinnedArea),
+    ...ids.filter((id) => !tabs[id]?.pinned && !pinnedArea(id)),
   ];
 }
 

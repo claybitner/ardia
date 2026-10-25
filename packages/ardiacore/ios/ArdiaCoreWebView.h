@@ -16,8 +16,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) NSString *adoptId;
 @property (nonatomic, copy, nullable) NSString *transferKey;
 @property (nonatomic) BOOL standalone;
+@property (nonatomic) BOOL temporary;
+@property (nonatomic, copy, nullable) NSString *temporarySource;
 @property (nonatomic, copy, nullable) NSString *extensionHost;
 @property (nonatomic, strong, nullable) NSColor *pageBackgroundColor;
+@property (nonatomic, strong, nullable) NSColor *contentsBackgroundColor;
 @property (nonatomic, copy, nullable) NSString *pageColor;
 @property (nonatomic, copy, nullable) NSString *shownURL;
 @property (nonatomic) BOOL visible;
@@ -44,6 +47,9 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSArray<NSNumber *> *)devScrollZoom:(NSArray<NSDictionary<NSString *, id> *> *)steps
                                browser:(int)browserId NS_SWIFT_NAME(devScrollZoom(_:browserId:));
 + (void)setDisplayMediaPicker:(BOOL)enabled;
++ (void)setPeekModifier:(NSString *)modifier;
++ (void)setSplitLinkModifier:(NSString *)modifier;
++ (BOOL)devPostPeekMouseUp:(NSString *)keys over:(NSString *)transferKey;
 + (void)setAutoPictureInPictureEnabled:(BOOL)enabled NS_SWIFT_NAME(setAutoPictureInPictureEnabled(_:));
 + (void)setVideoUpscalingEnabled:(BOOL)enabled NS_SWIFT_NAME(setVideoUpscalingEnabled(_:));
 + (void)setVideoUpscalingTestConditions:(NSDictionary<NSString *, NSNumber *> *)conditions
@@ -86,7 +92,10 @@ NS_ASSUME_NONNULL_BEGIN
     NS_SWIFT_NAME(downloadImage(_:maxPixels:completion:));
 
 - (void)mediaCommand:(NSString *)action seconds:(double)seconds NS_SWIFT_NAME(mediaCommand(_:seconds:));
-- (void)requestPictureInPicture:(void (^)(BOOL ok))completion NS_SWIFT_NAME(requestPictureInPicture(_:));
+- (BOOL)takeControlPressAt:(double)clickMs control:(NSInteger)target NS_SWIFT_NAME(takeControlPress(clickAt:control:));
+- (void)requestPictureInPictureForClickAt:(double)clickMs
+                                  control:(NSInteger)target
+                               completion:(void (^)(BOOL ok))completion NS_SWIFT_NAME(requestPictureInPicture(clickAt:control:_:));
 - (void)exitPictureInPicture;
 
 - (void)securityInfo:(void (^)(NSDictionary<NSString *, id> *info))completion NS_SWIFT_NAME(securityInfo(_:));
@@ -98,8 +107,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)resolveAutofillPrompt:(NSInteger)promptId action:(NSString *)action NS_SWIFT_NAME(resolveAutofillPrompt(_:action:));
 - (nullable NSString *)executeExtensionAction:(NSString *)extensionId NS_SWIFT_NAME(executeExtensionAction(_:));
 
-- (void)resolveDisplayMedia:(NSString *)requestId sourceId:(nullable NSString *)sourceId
-    NS_SWIFT_NAME(resolveDisplayMedia(_:sourceId:));
+- (void)resolveDisplayMedia:(NSString *)requestId sourceId:(nullable NSString *)sourceId audio:(BOOL)audio
+    NS_SWIFT_NAME(resolveDisplayMedia(_:sourceId:audio:));
 @property (nonatomic, readonly, nullable) NSString *mediaCaptureSourceId;
 
 - (void)notificationAction:(NSString *)notificationId action:(NSString *)action NS_SWIFT_NAME(notificationAction(_:action:));

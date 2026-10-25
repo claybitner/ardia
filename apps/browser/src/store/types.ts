@@ -45,6 +45,7 @@ export type BrowserWindow = {
   frame: Frame | null;
   createdAt: number;
   kind?: "small";
+  linkPointer?: [number, number];
   originalProfileId?: string;
   chromeWindow?: string;
 };
@@ -63,6 +64,7 @@ export type Tab = {
   customIcon: string | null;
   pinnedUrl: string | null;
   pinnedAsRow?: true;
+  tileFolder?: TileFolder;
   navigation: { url: string; seq: number; userInitiated?: boolean } | null;
   adoptId?: string;
   openerId: string | null;
@@ -75,6 +77,8 @@ export type Tab = {
   lastActiveAt: number;
 };
 
+export type TileFolder = { id: string; name: string; renamedAt?: number };
+
 export type TabLive = {
   isLoading: boolean;
   canGoBack: boolean;
@@ -84,6 +88,8 @@ export type TabLive = {
 };
 
 export type GroupColor = "grey" | "blue" | "red" | "yellow" | "green" | "pink" | "purple" | "cyan" | "orange";
+
+export type ClosedGroupInfo = Pick<TabGroup, "id" | "name" | "icon" | "color"> & { pinned?: boolean };
 
 export type TabGroup = {
   id: string;
@@ -99,6 +105,7 @@ export type TabGroup = {
   autoUngroup?: boolean;
   pinnedOpenerId?: string;
   pinKey?: string;
+  parentId?: string;
 };
 
 export type SplitView = {
@@ -134,7 +141,7 @@ export type TabSnapshot = Pick<
   Tab,
   "url" | "title" | "favicon" | "pinned" | "muted" | "zoom" | "customTitle" | "customIcon" | "profileId"
 > &
-  Partial<Pick<Tab, "pinnedUrl" | "pinnedAsRow">>;
+  Partial<Pick<Tab, "pinnedUrl" | "pinnedAsRow" | "tileFolder">>;
 
 export type ClosedTab = {
   kind: "tab";
@@ -144,7 +151,8 @@ export type ClosedTab = {
   restoreFrom?: string;
   windowId: string;
   index: number;
-  group: Pick<TabGroup, "id" | "name" | "icon" | "color"> | null;
+  group: ClosedGroupInfo | null;
+  parents?: ClosedGroupInfo[];
   closedAt: number;
   pinnedTile?: boolean;
   small?: boolean;
@@ -161,15 +169,19 @@ export type ClosedWindow = {
 
 export type ParkedPins = {
   tabs: (TabSnapshot & { id: string; groupId: string | null; restoreFrom?: string })[];
-  groups: Pick<TabGroup, "id" | "name" | "icon" | "color" | "collapsed">[];
+  groups: (Pick<TabGroup, "id" | "name" | "icon" | "color" | "collapsed"> & { parentId?: string })[];
+  splits?: (Pick<SplitView, "orientation" | "sizes" | "stack"> & { ids: string[] })[];
 };
+
+export type NestedGroupSnapshot = Pick<TabGroup, "id" | "name" | "icon" | "color" | "collapsed"> & { parentId: string; tabIndexes: number[] };
 
 export type ClosedGroup = {
   kind: "group";
   id: string;
-  group: Pick<TabGroup, "id" | "name" | "icon" | "color" | "pinned">;
+  group: Pick<TabGroup, "id" | "name" | "icon" | "color" | "pinned"> & { parentId?: string };
   tabs: TabSnapshot[];
   tabIds?: string[];
+  nested?: NestedGroupSnapshot[];
   windowId: string;
   index: number;
   closedAt: number;

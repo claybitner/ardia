@@ -3,6 +3,7 @@ import { changedIds } from "./changes";
 import { inPinnedContainer, isIncognitoProfile, wake } from "./model";
 import { mirrored, pinKeyOf } from "./pinMirror";
 import { splitOf } from "./splits";
+import { sharedListTab } from "./tabShare";
 import type { BrowserWindow, Tab, TabGroup, TabLive } from "./types";
 
 const hasPage = (t: Tab) => !!t.navigation || !!t.adoptId;
@@ -10,7 +11,7 @@ const hasPage = (t: Tab) => !!t.navigation || !!t.adoptId;
 export const shareKeyOf = (t: Pick<Tab, "profileId" | "id" | "pinKey">) => `${t.profileId}\u0001${pinKeyOf(t)}`;
 
 function shares(s: BrowserState, t: Tab | undefined): t is Tab {
-  return !!t && !isIncognitoProfile(t.profileId) && mirrored(s.windows[t.windowId]) && inPinnedContainer(s, t.id) && !splitOf(s, t.id);
+  return !!t && !isIncognitoProfile(t.profileId) && mirrored(s.windows[t.windowId]) && (inPinnedContainer(s, t.id) || sharedListTab(s, t)) && !splitOf(s, t.id);
 }
 
 function holds(s: BrowserState, holder: Tab | undefined, copy: Tab): holder is Tab {
@@ -40,8 +41,6 @@ export function holderOf(s: BrowserState, id: string): Tab | undefined {
   }
   return best;
 }
-
-export const isFrozenCopy = (t: Tab | undefined) => !!t?.pageIn;
 
 const swapIds = (ids: string[], a: string, b: string) => {
   if (!ids.includes(a) && !ids.includes(b)) return ids;

@@ -62,6 +62,8 @@ export type BrowserCommand =
   | "bookmarkPage"
   | "addBookmarkToFolder"
   | "openBookmark"
+  | "addFolderToSidebar"
+  | "restoreArcFolders"
   | "toggleMute"
   | "downloads"
   | "mergeAllWindows"
@@ -80,6 +82,7 @@ export type BrowserCommand =
   | "newTabInGroup"
   | "newGroupWithTabs"
   | "cleanUpTabs"
+  | "tidyPins"
   | "searchTabs"
   | "renameTab"
   | "changeTabIcon"
@@ -135,11 +138,12 @@ export type AppEvent =
   | { type: "screenLocked" }
   | { type: "switcherReleased" }
   | { type: "switcherKey"; key: "escape" | "next" | "previous" }
-  | { type: "switcherMouseUp" };
+  | { type: "switcherMouseUp" }
+  | { type: "dragEscape" };
 
 type ShellEvents = {
   onCommand: (e: CommandEvent) => void;
-  onOpenURLs: (e: { urls: string[] }) => void;
+  onOpenURLs: (e: { urls: string[]; pointer?: [number, number] }) => void;
   onWindowEvent: (e: WindowEvent) => void;
   onAppEvent: (e: AppEvent) => void;
 };
@@ -156,6 +160,7 @@ export type MenuItem =
       modifiers?: ("command" | "shift" | "option" | "control")[];
       enabled?: boolean;
       checked?: boolean;
+      alternate?: boolean;
       children?: MenuItem[];
       share?: boolean;
     };
@@ -170,6 +175,7 @@ export type OpenWindowOptions = {
   size?: [number, number];
   behind?: string;
   chromeWindow?: string;
+  pointer?: [number, number];
 };
 
 export type MenuEntry = { id: string; title: string; current?: boolean };
@@ -189,6 +195,7 @@ export type MenuState = {
   recentlyClosedGroups?: MenuEntry[];
   warnBeforeQuitting: boolean;
   warnBeforeClosingWindow?: boolean;
+  undoReopensClosedTab?: boolean;
   downloadsInProgress?: number;
   extensions?: { id: string; title: string; icon?: string | null; enabled: boolean }[];
   shortcuts?: Record<string, string[]>;
@@ -218,11 +225,13 @@ const Shell = requireNativeModule<{
   showMenu(items: MenuItem[]): Promise<string | null>;
   copyText(text: string): void;
   setSwitcherCapture(active: boolean): Promise<void>;
+  setDragEscapeCapture?(active: boolean): Promise<void>;
   cancelFocusMove(generation: number, restoringSource: boolean): Promise<void>;
   claimFocus(generation: number, tag: number): Promise<void>;
   switcherPointerMoved?(): boolean;
   startDictation(): void;
   pickFiles(): Promise<string[]>;
+  pickFolder?(current: string | null, prompt: string | null): Promise<string | null>;
   readDocument(name: string): string | null;
   writeDocument(name: string, contents: string): void;
   saveDocument(name: string, contents: string): Promise<void>;
@@ -262,19 +271,34 @@ export const fetchBangList = (etag: string | null): Promise<BangListReply> | nul
 
 export const startDictation = () => Shell.startDictation();
 export const setSwitcherCapture = (active: boolean) => void Shell.setSwitcherCapture(active);
+export const setDragEscapeCapture = (active: boolean) => void Shell.setDragEscapeCapture?.(active);
 export const cancelFocusMove = (generation: number, restoringSource: boolean) =>
   void Shell.cancelFocusMove(generation, restoringSource);
 export const claimFocus = (generation: number, tag: number) => void Shell.claimFocus(generation, tag);
 export const restartSwitcherPointer = () => Shell.setSwitcherCapture(true);
 export const switcherPointerMoved = () => Shell.switcherPointerMoved?.() ?? true;
 export const pickFiles = () => Shell.pickFiles();
+export const pickFolder = (current: string | null, prompt: string | null = null) => Shell.pickFolder?.(current, prompt) ?? Promise.resolve(null);
 
 export function copyText(text: string) {
   Shell.copyText(text);
 }
 
+let menusShown = 0;
+const menuWatchers = new Set<() => void>();
+const menusChanged = (by: number) => {
+  menusShown += by;
+  for (const watcher of menuWatchers) watcher();
+};
+export const menuShown = () => menusShown > 0;
+export function watchMenus(watcher: () => void): () => void {
+  menuWatchers.add(watcher);
+  return () => void menuWatchers.delete(watcher);
+}
+
 export function showMenu(items: MenuItem[]): Promise<string | null> {
-  return Shell.showMenu(items);
+  menusChanged(1);
+  return Promise.resolve(Shell.showMenu(items)).finally(() => menusChanged(-1));
 }
 
 export const openWindow = (id: string, options: OpenWindowOptions = {}) => Shell.openWindow(id, options);
@@ -325,12 +349,12 @@ export const prompt = (options: PromptOptions) => Shell.prompt(options);
 export const onCommand = (listener: (e: CommandEvent) => void) => Shell.addListener("onCommand", listener);
 export const onWindowEvent = (listener: (e: WindowEvent) => void) => Shell.addListener("onWindowEvent", listener);
 export const onAppEvent = (listener: (e: AppEvent) => void) => Shell.addListener("onAppEvent", listener);
-export const onOpenURLs = (listener: (urls: string[]) => void) =>
-  Shell.addListener("onOpenURLs", ({ urls }) => listener(urls));
+export const onOpenURLs = (listener: (urls: string[], pointer?: [number, number]) => void) =>
+  Shell.addListener("onOpenURLs", ({ urls, pointer }) => listener(urls, pointer));
 
 export const WindowDragRegion = requireNativeViewManager<ViewProps & { titleBarDoubleClick?: boolean; onRegionDoubleClick?: () => void }>("ArdiaShell");
 
-export const OutsidePressArea = requireNativeViewManager<ViewProps & { onOutsidePress?: () => void }>("ArdiaOutsidePressArea");
+export const OutsidePressArea = requireNativeViewManager<ViewProps & { onOutsidePress?: (event: { nativeEvent: { timestamp?: number } }) => void }>("ArdiaOutsidePressArea");
 
 export type SymbolProps = ViewProps & {
   name: string;

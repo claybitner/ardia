@@ -3,11 +3,15 @@ import { useEffect, useState } from "react";
 import { Surface } from "@ardia/shell";
 import { AccessibilityInfo, Animated, StyleSheet, View } from "react-native";
 import { hex, layout, useTheme } from "../lib/theme";
+import { useWindowId } from "../store/hooks";
+import { useCardAnchors } from "./layout/windowLayout";
 import { springParams } from "./layout/swipeMotion";
 import { NewTabExtras } from "./ntp";
+import { useOnboarding } from "./onboarding/state";
 import { Omnibox } from "./Omnibox";
 
 const BAR_HEIGHT = 112;
+const BAR_BORDER = 0.5;
 const MARKS = {
   green: { back: require("../../assets/ntp-mark-back.png"), front: require("../../assets/ntp-mark-front.png"), sun: require("../../assets/ntp-mark-sun.png") },
   plum: { back: require("../../assets/ntp-mark-plum-back.png"), front: require("../../assets/ntp-mark-plum-front.png"), sun: require("../../assets/ntp-mark-plum-sun.png") },
@@ -32,12 +36,16 @@ const SUN_DRIFT_SPRING = springParams(0.6, 1);
 const DIA_OFFSET = 1;
 
 type Size = { width: number; height: number };
-let lastSize: Size | null = null;
+let lastSize: { card: Size; size: Size } | null = null;
 const introPlayed = new Set<string>();
 
 let reduceMotion = false;
 AccessibilityInfo.isReduceMotionEnabled().then((on) => (reduceMotion = on), () => {});
 AccessibilityInfo.addEventListener("reduceMotionChanged", (on) => (reduceMotion = on));
+
+function sameSize(a: Size, b: Size) {
+  return a.width === b.width && a.height === b.height;
+}
 
 export function barWidth(viewWidth: number) {
   const content = viewWidth < 708 ? (viewWidth <= 636 ? viewWidth - 20 : 616) : viewWidth < 1700 ? 652 : 774;
@@ -46,11 +54,14 @@ export function barWidth(viewWidth: number) {
 
 export function NewTabPage({ tabId, toolbar = true }: { tabId: string; toolbar?: boolean }) {
   const theme = useTheme();
-  const [size, setSizeState] = useState<Size | null>(lastSize);
-  const setSize = (next: Size) => {
-    lastSize = next;
-    setSizeState((prev) => (prev && prev.width === next.width && prev.height === next.height ? prev : next));
-  };
+  const windowId = useWindowId();
+  const onboarding = useOnboarding((s) => s.windowId === windowId);
+  const card = useCardAnchors((s) => s[windowId]);
+  const [size, setSizeState] = useState<Size | null>(() => (lastSize && (!card || sameSize(lastSize.card, card)) ? lastSize.size : null));
+  const setSize = (next: Size) => setSizeState((prev) => (prev && sameSize(prev, next) ? prev : next));
+  useEffect(() => {
+    if (size && card) lastSize = { card: { width: card.width, height: card.height }, size };
+  }, [size, card?.width, card?.height]);
   const [panelHeight, setPanelHeight] = useState(BAR_HEIGHT);
   const [playIntro] = useState(() => !introPlayed.has(tabId));
   const [rise] = useState(() => {
@@ -125,9 +136,9 @@ export function NewTabPage({ tabId, toolbar = true }: { tabId: string; toolbar?:
           fill={hex(theme.ntpBarSolid)}
           cornerRadius={20}
           borderColor={hex(theme.ntpBarBorder)}
-          borderWidth={0.5}
+          borderWidth={BAR_BORDER}
         >
-          <Omnibox variant="hero" tabId={tabId} />
+          {onboarding ? <View style={{ height: BAR_HEIGHT - 2 * BAR_BORDER }} /> : <Omnibox variant="hero" tabId={tabId} />}
         </Surface>
       </View>
       <NewTabExtras size={size} bar={bar} />

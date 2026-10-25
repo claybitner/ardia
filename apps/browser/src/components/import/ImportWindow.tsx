@@ -1,16 +1,18 @@
 import type { BrowserProfile, BrowserSource, DiaAutomationStatus, DiaTabsResult, ImportedExtension, ImportKind, ImportResult, SpaceSummary } from "@ardia/import";
 import { closeWindow, confirm, Symbol, VisualEffect, WindowDragRegion } from "@ardia/shell";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Animated, AppState, Easing, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { allArcHolders, restoreArcFolders } from "../../lib/bookmarkGroups";
 import { useTheme } from "../../lib/theme";
 import { useBrowser } from "../../store/browser";
 import { useProfiles } from "../../store/hooks";
+import { MAX_DRAFT_LINKS } from "../../store/draftGroups";
 import { plural } from "../../store/model";
 import type { ProfileColor } from "../../store/types";
 import { useHover } from "../primitives";
 import { Button, Checkbox, PopUp, useFormColors } from "../settings/controls";
 import { useOnboarding } from "../onboarding/state";
-import { IMPORT_WINDOW_ID } from "../settings/windows";
+import { IMPORT_WINDOW_ID, takePreferredImportSource } from "../settings/windows";
 import { applyResult, applySafari, emptyCounts, importArcSpace, importBookmarks, importDiaProfile, openInWebStore, profileColorFor, type ImportCounts } from "./apply";
 import { importModule } from "./module";
 
@@ -56,6 +58,8 @@ export function ImportWindow() {
   const [fullDiskAccess, setFullDiskAccess] = useState(false);
   const [safariCookies, setSafariCookies] = useState(true);
   const [notes, setNotes] = useState<string[]>([]);
+  const bookmarks = useBrowser((s) => s.bookmarks);
+  const arcHolders = useMemo(() => allArcHolders({ bookmarks }), [bookmarks]);
   const [extensions, setExtensions] = useState<{ profileId: string; list: ImportedExtension[]; opened: boolean }>({ profileId: "", list: [], opened: false });
   const onboarding = useOnboarding((s) => s.windowId !== null);
   const [diaStatus, setDiaStatus] = useState<DiaAutomationStatus | "checking" | "reading">("checking");
@@ -103,7 +107,8 @@ export function ImportWindow() {
       .listBrowsers()
       .then((list) => {
         setBrowsers(list);
-        const first = list.find((b) => !b.needsFullDiskAccess && !b.requiresExport && b.family !== "automation") ?? list[0];
+        const preferred = takePreferredImportSource();
+        const first = list.find((b) => b.id === preferred) ?? list.find((b) => !b.needsFullDiskAccess && !b.requiresExport && b.family !== "automation") ?? list[0];
         if (first) choose(first);
         setStep("choose");
       })
@@ -150,7 +155,8 @@ export function ImportWindow() {
       if (source.requiresExport) return setStep("safari");
       if (source.profiles.length > 1 || (isArc && allSpaces.length > 1)) return setStep("profiles");
     }
-    if ((step === "choose" || step === "profiles") && ENCRYPTED.some((k) => kinds.has(k)) && source.needsKeychain && api && !api.isBrowserUnlocked(source.id)) {
+    const encryptedTabs = kinds.has("tabs") && source.profiles.some((p) => sourceProfiles.includes(p.id) && p.tabsNeedKey);
+    if ((step === "choose" || step === "profiles") && (encryptedTabs || ENCRYPTED.some((k) => kinds.has(k))) && source.needsKeychain && api && !api.isBrowserUnlocked(source.id)) {
       return setStep("unlock");
     }
     void run(kinds);
@@ -169,7 +175,7 @@ export function ImportWindow() {
     }
   };
 
-  const destination = async (index: number, name: string, color?: string, emoji?: string): Promise<string> => {
+  const destination = async (index: number, name: string, color?: string, emoji?: string, shareWith?: string | null): Promise<string> => {
     if (index === 0) return target;
     const s = useBrowser.getState();
     const clash = s.profileOrder.find((id) => s.profiles[id]!.name.trim().toLowerCase() === name.trim().toLowerCase());
@@ -183,13 +189,14 @@ export function ImportWindow() {
       });
       if (!confirmed) return clash;
     }
-    return s.createProfile({ name, color: profileColorFor(color) as ProfileColor | undefined, icon: emoji ?? null });
+    return s.createProfile({ name, color: profileColorFor(color) as ProfileColor | undefined, icon: emoji ?? null, shareWith });
   };
 
-  const run = async (wanted: Set<ImportKind>) => {
+  const run = async (wanted: Set<ImportKind>, withoutKey = false) => {
     if (!api || !source) return;
     const selected = source.profiles.filter((p) => sourceProfiles.includes(p.id) || (isArc && p.spaces?.some((s) => spaces.includes(s.id))));
-    const requested: ImportKind[] = [...wanted];
+    const tabsLocked = (p: BrowserProfile) => withoutKey && !!p.tabsNeedKey;
+    const requested: ImportKind[] = [...wanted].filter((k) => k !== "tabs" || !selected.every(tabsLocked));
     if (isArc && requested.includes("tabs")) requested.push("spaces", "pinnedTabs");
     const order = KINDS.map((k) => k.kind).filter((k) => requested.includes(k));
     setStatus(Object.fromEntries(order.map((k) => [k, "pending"])));
@@ -209,8 +216,9 @@ export function ImportWindow() {
 
     for (const profile of selected) {
       let result: ImportResult;
+      const profileKinds = tabsLocked(profile) ? order.filter((k) => k !== "tabs") : order;
       try {
-        result = await api.importData(source.id, profile.id, order, {
+        result = await api.importData(source.id, profile.id, profileKinds, {
           spaceIds: isArc ? spaces : undefined,
           signal: abort.current.signal,
           onProgress: (p) => {
@@ -220,7 +228,7 @@ export function ImportWindow() {
         });
       } catch (e) {
         if ((e as { code?: string }).code === "cancelled") return;
-        for (const k of order) failed.set(k, [...(failed.get(k) ?? []), profile.name]);
+        for (const k of profileKinds) failed.set(k, [...(failed.get(k) ?? []), profile.name]);
         continue;
       }
       for (const k of result.failed) failed.set(k, [...(failed.get(k) ?? []), profile.name]);
@@ -237,17 +245,18 @@ export function ImportWindow() {
         let first: string | null = null;
         for (const space of profileSpaces) {
           const name = space.name || "Space";
-          const dest = await destination(destinationIndex++, name, space.color, space.emoji);
+          const dest = await destination(destinationIndex++, name, space.color, space.emoji, first);
           first ??= dest;
-          const r = importArcSpace(dest, space, name);
+          const r = importArcSpace(dest, space);
           add({ ...emptyCounts(), tabs: r.tabs, bookmarks: r.bookmarks });
+          if (r.skipped) left.push(`${plural(r.skipped, "link")} in ${name}'s folders weren't imported: each folder brings up to ${MAX_DRAFT_LINKS.toLocaleString("en-US")} links.`);
         }
         const dest = first ?? (await destination(destinationIndex++, result.profile?.name ?? profile.name, result.profile?.color));
-        add(await applyResult(dest, result, source.name, refused));
+        add(await applyResult(dest, result, source.name, profileKinds, refused));
         extensionsProfile ||= dest;
       } else {
         const dest = await destination(destinationIndex++, result.profile?.name ?? profile.name, result.profile?.color ?? profile.color);
-        add(await applyResult(dest, result, source.name, refused));
+        add(await applyResult(dest, result, source.name, profileKinds, refused));
         extensionsProfile ||= dest;
       }
       if (source.family === "chromium" || source.family === "arc") {
@@ -512,7 +521,7 @@ export function ImportWindow() {
     body = isArc ? (
       <>
         <Title title="Select spaces to import" subtitle={`We'll import your Arc spaces, tabs, and folders to ${APP}.`} />
-        <Text style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 10 }}>{`Customize which spaces to bring over to ${APP}. Each space becomes a profile.`}</Text>
+        <Text style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 10 }}>{`Customize which spaces to bring over to ${APP}. Each space becomes a profile, and the spaces of one Arc profile share its logins, cookies, extensions and history, as in Arc.`}</Text>
         <View style={{ gap: 6 }}>
           {allSpaces.map((s) => (
             <SelectRow
@@ -582,7 +591,7 @@ export function ImportWindow() {
               : `Some data is encrypted, so macOS will ask for your computer password to bring it securely into ${APP}.`}
           </Text>
           <Text style={{ fontSize: 12, lineHeight: 17, textAlign: "center", color: theme.textSecondary, maxWidth: 420 }}>
-            {`macOS may ask whether ${APP} can use “${source.name} Safe Storage” from your keychain: it's the key ${source.name} encrypts passwords, cookies and cards with. Click Allow. Your data stays on this Mac.`}
+            {`macOS may ask whether ${APP} can use “${source.keychainService ?? `${source.name} Safe Storage`}” from your keychain: it's the key ${source.name} encrypts passwords, cookies, cards and open tabs with. Click Allow. Your data stays on this Mac.`}
           </Text>
         </View>
         {error && <ErrorText text={error} />}
@@ -599,7 +608,7 @@ export function ImportWindow() {
             without.delete("passwords");
             without.delete("cookies");
             setKinds(without);
-            void run(without);
+            void run(without, true);
           }}
         />
         <Button title={unlocking ? "Waiting for password..." : "Continue"} kind="primary" disabled={unlocking} onPress={() => void unlock()} />
@@ -826,6 +835,14 @@ export function ImportWindow() {
         </Text>
         {leftBehind}
         {extensionList}
+        {arcHolders.length ? (
+          <Button
+            title="Restore Arc Folders as Groups"
+            onPress={() => {
+              for (const id of arcHolders) restoreArcFolders(id, null);
+            }}
+          />
+        ) : null}
       </View>
     );
     footer = (

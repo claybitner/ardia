@@ -9,6 +9,7 @@ import { openSettings } from "../components/settings/windows";
 import { useBrowser, type BrowserState } from "../store/browser";
 import type { BatterySaverWhen } from "../store/settings";
 import { activeTabId, engineProfile, isIncognitoProfile, wake } from "../store/model";
+import { peekTabId } from "../store/peek";
 import { holderOf } from "../store/pinShare";
 import { splitOf } from "../store/splits";
 import { switchOn } from "./killSwitches";
@@ -66,6 +67,8 @@ function shownTabIds(s: BrowserState): Set<string> {
     const id = activeTabId(s, w.id);
     if (!id) continue;
     shown.add(id);
+    const peek = peekTabId(s, w.id);
+    if (peek) shown.add(peek);
     const held = s.tabs[id]?.pageIn;
     if (held) shown.add(held);
     for (const pane of splitOf(s, id)?.tabIds ?? []) shown.add(pane);
@@ -327,7 +330,7 @@ export async function freezeTab(id: string): Promise<boolean> {
   return true;
 }
 
-function reloadRecentTabs(sys: SystemState) {
+export function reloadRecentTabs(sys: SystemState) {
   const gb = sys.physicalMemory / 2 ** 30;
   const busy = sys.onBattery || sys.lowPowerMode || sys.memoryPressure !== "normal";
   const count = busy ? 0 : gb >= 32 ? 4 : gb >= 16 ? 3 : gb >= 8 ? 1 : 0;
@@ -342,8 +345,9 @@ function reloadRecentTabs(sys: SystemState) {
     .map((t) => t.id);
   ids.forEach((id, i) =>
     setTimeout(() => {
-      const t = store().tabs[id];
-      if (t?.url && !t.navigation && !t.adoptId && !t.pageIn && !holderOf(store(), id)) store().updateTab(id, wake(t));
+      const now = store();
+      const t = now.tabs[id];
+      if (t?.url && !t.navigation && !t.adoptId && !t.unloaded && !t.pageIn && !holderOf(now, id)) now.updateTab(id, wake(t));
     }, 2000 * (i + 1)),
   );
   return ids;

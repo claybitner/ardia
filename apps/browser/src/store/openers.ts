@@ -1,4 +1,5 @@
 import type { BrowserState } from "./browser";
+import { ancestorIds } from "./groups";
 import { inPinnedContainer } from "./model";
 import { groupOf, pinnedChildGroup } from "./organize";
 import { splitOf } from "./splits";
@@ -28,6 +29,19 @@ export function insertionIndex(s: BrowserState, w: BrowserWindow, tab: Tab, back
 function firstRegular(s: BrowserState, w: BrowserWindow, tab: Tab): number {
   const first = w.tabIds.findIndex((id) => s.tabs[id]?.profileId === tab.profileId && regular(s, id));
   return first >= 0 ? first : w.tabIds.length;
+}
+
+export function nextToActive(s: BrowserState, windowId: string, profileId: string | undefined): { openerId: string; index: number } | undefined {
+  if (s.settings.newTabPosition !== "nextToCurrent") return undefined;
+  const w = s.windows[windowId];
+  if (!w) return undefined;
+  const profile = !w.incognito && profileId && s.profiles[profileId] ? profileId : w.profileId;
+  const activeId = w.activeTabIds[profile];
+  const active = activeId ? s.tabs[activeId] : undefined;
+  if (!active || active.windowId !== w.id) return undefined;
+  if (!regular(s, active.id)) return { openerId: active.id, index: firstRegular(s, w, active) };
+  const panes = splitOf(s, active.id)?.tabIds ?? [active.id];
+  return { openerId: active.id, index: outsideSplit(s, w, Math.max(...panes.map((id) => w.tabIds.indexOf(id))) + 1) };
 }
 
 const listStart = (s: BrowserState, w: BrowserWindow, tab: Tab) =>
@@ -68,10 +82,15 @@ export function switchKeepsOpeners(s: BrowserState, from: string, to: string): b
   return a === b || b === from || a === to;
 }
 
+const hiddenInGroup = (s: BrowserState, id: string) => {
+  const g = groupOf(s, id);
+  return !!g && (g.collapsed || ancestorIds(s.groups, g.id).some((x) => s.groups[x]!.collapsed));
+};
+
 export function openerSuccessor(s: BrowserState, closed: string, order: string[], left: string[]): string | undefined {
   const at = order.indexOf(closed);
   const candidates = [...left.filter((id) => order.indexOf(id) > at), ...left.filter((id) => order.indexOf(id) < at).reverse()].filter(
-    (id) => !s.tabs[id]!.unloaded && !groupOf(s, id)?.collapsed,
+    (id) => !s.tabs[id]!.unloaded && !hiddenInGroup(s, id),
   );
   const opener = s.tabs[closed]?.openerId;
   return (

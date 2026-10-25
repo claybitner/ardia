@@ -1,7 +1,7 @@
 import { ActivitySpinner, ContextMenuArea, FadeLabel, MouseArea, Surface, Symbol } from "@ardia/shell";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { Animated, Pressable, TextInput, View, type GestureResponderEvent } from "react-native";
-import { closeTab, toggleMute } from "../../lib/actions";
+import { toggleMute } from "../../lib/actions";
 import { hex, layout, useTheme } from "../../lib/theme";
 import { useBrowser } from "../../store/browser";
 import { useIsActiveTab, usePageProfileId, useTab, useWindowId } from "../../store/hooks";
@@ -9,11 +9,12 @@ import { HoverSlot } from "../HoverSlot";
 import { IconButton, useHover } from "../primitives";
 import { isPinnedRow } from "../../store/model";
 import { awayFromPin } from "../../store/organize";
+import { splitRowPanes } from "../../store/splits";
 import { clickTab, commitRename, endRename, startRename, tabTitle } from "./actions";
 import { useDragItem, useDropOnto } from "./dnd";
 import { useShift, type EntryMotion } from "./entryMotion";
 import { dismissHover, useRowHover } from "./hover";
-import { openTabMenu } from "./menus";
+import { middleClickTab, openTabMenu } from "./menus";
 import { ACTIVE, LOADING, PLAYING, SELECTED, useRowState } from "./rowState";
 import { registerRow, useSidebarUi } from "./state";
 import { TabIcon } from "./TabIcon";
@@ -77,7 +78,7 @@ export const TabRow = memo(function TabRow({ tabId, onto = false, shift = null }
       style={moved.style as object}
       onDoubleClick={() => void startRename(windowId, { kind: "tab", id: tabId })}
     >
-      <MouseArea onMiddleClick={() => void closeTab(tabId)}>
+      <MouseArea onMiddleClick={() => middleClickTab(tabId)}>
         <ContextMenuArea
           onContextMenu={() => {
             dismissHover();
@@ -142,7 +143,7 @@ export const TabRow = memo(function TabRow({ tabId, onto = false, shift = null }
                 <HoverSlot
                   hovered={hovered && !renaming}
                   width={22}
-                  hover={<IconButton icon="xmark" size={10} weight="semibold" box={22} radius={6} onPress={() => void closeTab(tab.id)} tooltip="Close Tab (⌘W)" />}
+                  hover={<IconButton icon="xmark" size={10} weight="semibold" box={22} radius={6} onPress={() => middleClickTab(tab.id)} tooltip="Close Tab (⌘W)" />}
                 >
                   {loading && <ActivitySpinner style={{ width: 12, height: 12, marginRight: 2 }} />}
                 </HoverSlot>
@@ -209,12 +210,12 @@ export const SplitRowItem = memo(function SplitRowItem({
   motion = null,
 }: {
   splitId: string;
-  section: "list" | "pinnedGroups";
+  section: "list" | "pinnedRows" | "pinnedGroups";
   parentGroup?: string;
   motion?: EntryMotion | null;
 }) {
   const windowId = useWindowId();
-  const tabIds = useBrowser((s) => s.splits[splitId]?.tabIds.filter((id) => s.tabs[id] && !s.tabs[id]!.pinned).join(",") ?? "").split(",").filter(Boolean);
+  const tabIds = useBrowser((s) => splitRowPanes(s, s.splits[splitId]).join(",")).split(",").filter(Boolean);
   const { wrapper, handle } = useDragItem(`s:${splitId}`, { kind: "split", tabIds, section, parentGroup }, undefined, motion?.clip);
   const theme = useTheme();
   const profileId = usePageProfileId();

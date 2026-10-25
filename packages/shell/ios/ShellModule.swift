@@ -1,13 +1,18 @@
 import AppKit
+import Carbon.HIToolbox
 import ExpoModulesCore
 
 public enum OpenURLInbox {
   static var pending: [String] = []
-  static var deliver: (([String]) -> Void)?
+  static var pendingPointer = NSPoint.zero
+  static var deliver: (([String], NSPoint) -> Void)?
 
   public static func receive(_ urls: [URL]) {
+    let pointer = NSEvent.mouseLocation
     let strings = urls.map { $0.isFileURL ? $0.absoluteString : $0.absoluteString }
-    if let deliver { deliver(strings) } else { pending += strings }
+    if let deliver { return deliver(strings, pointer) }
+    pending += strings
+    pendingPointer = pointer
   }
 }
 
@@ -229,6 +234,7 @@ public class ShellModule: Module {
   private var sidebarObservers: [(NotificationCenter, NSObjectProtocol)] = []
   private var flagsMonitor: Any?
   private var switcherMonitor: Any?
+  private var dragEscapeMonitor: Any?
   private let switcherPointer = SwitcherPointer()
 
   public func definition() -> ModuleDefinition {
@@ -237,8 +243,10 @@ public class ShellModule: Module {
 
     OnCreate {
       _ = installTextFieldSelectAll
+      _ = installInputSourceKeys
       _ = installScrollViewInsetFix
       _ = installOutsidePressMonitor
+      _ = installWindowMoveFallback
       DispatchQueue.main.async { [weak self] in
         MenuTarget.shared.handler = { command, arg, windowId in
           if command == "closeTab", WindowManager.shared.closeForeignKeyWindow() { return }
@@ -274,6 +282,8 @@ public class ShellModule: Module {
       self.flagsMonitor = nil
       if let monitor = self.switcherMonitor { NSEvent.removeMonitor(monitor) }
       self.switcherMonitor = nil
+      if let monitor = self.dragEscapeMonitor { NSEvent.removeMonitor(monitor) }
+      self.dragEscapeMonitor = nil
       let gone = ObjectIdentifier(self)
       DispatchQueue.main.async {
         WindowManager.shared.runtimeGone(gone)
@@ -287,11 +297,11 @@ public class ShellModule: Module {
 
     OnStartObserving("onOpenURLs") {
       DispatchQueue.main.async { [weak self] in
-        OpenURLInbox.deliver = { urls in self?.sendEvent("onOpenURLs", ["urls": urls]) }
+        OpenURLInbox.deliver = { urls, pointer in self?.sendEvent("onOpenURLs", ["urls": urls, "pointer": [pointer.x, pointer.y]]) }
         if !OpenURLInbox.pending.isEmpty {
           let urls = OpenURLInbox.pending
           OpenURLInbox.pending = []
-          OpenURLInbox.deliver?(urls)
+          OpenURLInbox.deliver?(urls, OpenURLInbox.pendingPointer)
         }
       }
     }
@@ -308,7 +318,8 @@ public class ShellModule: Module {
         size: options["size"] as? [Double],
         behind: options["behind"] as? String,
         chromeWindow: options["chromeWindow"] as? String,
-        claim: options["claim"] as? String)
+        claim: options["claim"] as? String,
+        pointer: (options["pointer"] as? [Double]).flatMap { $0.count == 2 ? NSPoint(x: $0[0], y: $0[1]) : nil })
     }.runOnQueue(.main)
 
     AsyncFunction("closeWindow") { (id: String) in WindowManager.shared.close(id: id) }.runOnQueue(.main)
@@ -436,6 +447,17 @@ public class ShellModule: Module {
       }
     }.runOnQueue(.main)
 
+    AsyncFunction("pickFolder") { (current: String?, prompt: String?, promise: Promise) in
+      let panel = NSOpenPanel()
+      panel.canChooseFiles = false
+      panel.canChooseDirectories = true
+      panel.canCreateDirectories = true
+      panel.allowsMultipleSelection = false
+      if let prompt { panel.prompt = prompt }
+      if let current { panel.directoryURL = URL(fileURLWithPath: current, isDirectory: true) }
+      panel.begin { response in promise.resolve(response == .OK ? panel.url?.path : nil) }
+    }.runOnQueue(.main)
+
     Function("readDocument") { (name: String) -> String? in DocumentStore.read(name) }
 
     Function("writeDocument") { (name: String, contents: String) in try DocumentStore.write(name, contents) }
@@ -485,6 +507,20 @@ public class ShellModule: Module {
         case 123: emit(["type": "switcherKey", "key": "previous"])
         default: break
         }
+        return nil
+      }
+    }.runOnQueue(.main)
+
+    AsyncFunction("setDragEscapeCapture") { [weak self] (active: Bool) in
+      guard let self else { return }
+      if let monitor = self.dragEscapeMonitor { NSEvent.removeMonitor(monitor) }
+      self.dragEscapeMonitor = nil
+      guard active else { return }
+      let emit: ([String: Any]) -> Void = { [weak self] body in self?.sendEvent("onAppEvent", body) }
+      self.dragEscapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard event.keyCode == 53 || event.charactersIgnoringModifiers == "\u{1b}", modifiers.isEmpty else { return event }
+        emit(["type": "dragEscape"])
         return nil
       }
     }.runOnQueue(.main)
@@ -577,6 +613,7 @@ public class ShellModule: Module {
         entry.target = target
         entry.representedObject = item["id"]
       }
+      entry.isAlternate = item["alternate"] as? Bool == true
       entry.isEnabled = item["enabled"] as? Bool ?? true
       entry.state = item["checked"] as? Bool == true ? .on : .off
       if let symbol = item["symbol"] as? String {
@@ -1109,20 +1146,20 @@ final class PointerWatcher: NSObject {
     if let area { view?.removeTrackingArea(area) }
   }
 
-  @objc func mouseMoved(with event: NSEvent) {
+  @objc(mouseMoved:) func mouseMoved(with event: NSEvent) {
     guard let window = event.window else { return }
     ServerWindowDrag.pointerMoved(in: window, at: event.locationInWindow)
   }
 
-  @objc func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
-  @objc func mouseExited(with event: NSEvent) {}
+  @objc(mouseEntered:) func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
+  @objc(mouseExited:) func mouseExited(with event: NSEvent) {}
 }
 
 final class WindowDragRegion: ExpoView {
   let onRegionDoubleClick = EventDispatcher()
   var titleBarDoubleClick = true
   private var monitor: Any?
-  private var doubleClickDown = false
+  private var doubleClickDown: PressPlace?
 
   override var mouseDownCanMoveWindow: Bool {
     get { true }
@@ -1144,20 +1181,20 @@ final class WindowDragRegion: ExpoView {
     ServerWindowDrag.track(self, bridge: appContext?.reactBridge)
     if let monitor { NSEvent.removeMonitor(monitor) }
     monitor = nil
-    doubleClickDown = false
+    doubleClickDown = nil
     guard window != nil else { return }
     monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
       guard let self else { return event }
       if event.type == .leftMouseUp {
-        guard self.doubleClickDown, event.window === self.window else { return event }
-        self.doubleClickDown = false
-        if event.clickCount == 2 { self.doubleClick(event) }
+        guard let down = self.doubleClickDown, event.window === self.window else { return event }
+        self.doubleClickDown = nil
+        if event.clickCount == 2 { self.doubleClick(event, down) }
         return nil
       }
-      self.doubleClickDown = false
-      guard self.ownsPress(event) else { return event }
+      self.doubleClickDown = nil
+      guard let place = self.pressPlace(event) else { return event }
       OutsidePressArea.tellAreas(event)
-      self.press(event, releaseFollows: true)
+      self.press(event, place, releaseFollows: true)
       return nil
     }
   }
@@ -1167,47 +1204,64 @@ final class WindowDragRegion: ExpoView {
   }
 
   override func mouseDown(with event: NSEvent) {
-    if ownsPress(event) { press(event, releaseFollows: false) } else { super.mouseDown(with: event) }
+    if let place = pressPlace(event) { press(event, place, releaseFollows: false) } else { super.mouseDown(with: event) }
   }
 
-  private func ownsPress(_ event: NSEvent) -> Bool {
+  private enum PressPlace { case region, titlebarEdge }
+
+  private func pressPlace(_ event: NSEvent) -> PressPlace? {
     guard let window, event.window === window, !isHiddenOrHasHiddenAncestor, alphaValue > 0,
           !event.modifierFlags.contains(.control),
-          bounds.contains(convert(event.locationInWindow, from: nil)),
-          let hit = window.contentView?.superview?.hitTest(event.locationInWindow)
-    else { return false }
-    if hit === self { return true }
+          let frame = window.contentView?.superview, let hit = frame.hitTest(event.locationInWindow)
+    else { return nil }
+    if hit === frame { return Self.onTitlebarTopEdge(window, frame, event.locationInWindow) ? .titlebarEdge : nil }
+    guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return nil }
+    if hit === self { return .region }
     let background = hit is NSClipView || (hit.superview as? NSClipView)?.documentView === hit
-    guard background, let container = superview, hit.isDescendant(of: container) else { return false }
+    guard background, let container = superview, hit.isDescendant(of: container) else { return nil }
     var view = hit.superview
     while let v = view, v !== container {
-      if !(v is NSClipView || v is NSScrollView), !v.mouseDownCanMoveWindow { return false }
+      if !(v is NSClipView || v is NSScrollView), !v.mouseDownCanMoveWindow { return nil }
       view = v.superview
     }
-    return true
+    return .region
   }
 
-  private func press(_ event: NSEvent, releaseFollows: Bool) {
+  private static let resizeDirectionSelector = NSSelectorFromString("_resizeDirectionForMouseLocation:")
+
+  private static func onTitlebarTopEdge(_ window: NSWindow, _ frame: NSView, _ point: NSPoint) -> Bool {
+    let band = ServerWindowDrag.band(window)
+    guard band > 0, frame.bounds.contains(point), point.y > frame.bounds.height - band,
+          let method = class_getInstanceMethod(type(of: window), resizeDirectionSelector),
+          method_getNumberOfArguments(method) == 3, returnType(method) == "q"
+    else { return false }
+    typealias Direction = @convention(c) (AnyObject, Selector, NSPoint) -> Int
+    let direction = unsafeBitCast(method_getImplementation(method), to: Direction.self)
+    let middle = NSPoint(x: frame.bounds.midX, y: point.y)
+    return direction(window, resizeDirectionSelector, point) == direction(window, resizeDirectionSelector, middle)
+  }
+
+  private func press(_ event: NSEvent, _ place: PressPlace, releaseFollows: Bool) {
     guard let window else { return }
     var key = NSApp.keyWindow
     while let k = key, k !== window { key = k.parent }
     if key == nil, window.canBecomeKey, !event.modifierFlags.contains(.command) { window.makeKeyAndOrderFront(nil) }
     if event.clickCount == 2 {
-      if releaseFollows { doubleClickDown = true } else { doubleClick(event) }
+      if releaseFollows { doubleClickDown = place } else { doubleClick(event, place) }
       return
     }
     window.performDrag(with: event)
   }
 
-  private func doubleClick(_ event: NSEvent) {
+  private func doubleClick(_ event: NSEvent, _ place: PressPlace) {
     guard let window else { return }
-    if titleBarDoubleClick { Self.doubleClick(window, event.modifierFlags) } else { onRegionDoubleClick([:]) }
+    if titleBarDoubleClick || place == .titlebarEdge { Self.doubleClick(window, event.modifierFlags) } else { onRegionDoubleClick([:]) }
   }
 
   static func doubleClick(_ window: NSWindow, _ modifiers: NSEvent.ModifierFlags) {
     let sel = NSSelectorFromString("_handlePossibleDoubleClickWithModifiers:")
     if let frame = window.contentView?.superview, let method = class_getInstanceMethod(type(of: frame), sel),
-       method_getNumberOfArguments(method) == 3, Self.returnsVoid(method) {
+       method_getNumberOfArguments(method) == 3, returnType(method) == "v" {
       typealias Handle = @convention(c) (AnyObject, Selector, UInt) -> Void
       unsafeBitCast(method_getImplementation(method), to: Handle.self)(frame, sel, modifiers.rawValue)
       return
@@ -1223,10 +1277,10 @@ final class WindowDragRegion: ExpoView {
     }
   }
 
-  private static func returnsVoid(_ method: Method) -> Bool {
+  private static func returnType(_ method: Method) -> String {
     let type = method_copyReturnType(method)
     defer { free(type) }
-    return String(cString: type) == "v"
+    return String(cString: type)
   }
 }
 
@@ -1264,7 +1318,7 @@ final class OutsidePressArea: ExpoView {
   fileprivate func pressed(_ event: NSEvent) {
     guard let window, event.window === window, !isHiddenOrHasHiddenAncestor else { return }
     if let hit = window.contentView?.superview?.hitTest(event.locationInWindow), hit.isDescendant(of: self) { return }
-    onOutsidePress([:])
+    onOutsidePress(["timestamp": event.timestamp * 1000])
   }
 }
 
@@ -1272,6 +1326,86 @@ let installOutsidePressMonitor: Void = {
   _ = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { event in
     OutsidePressArea.tellAreas(event)
     return event
+  }
+}()
+
+public class MagnifyAreaModule: Module {
+  public func definition() -> ModuleDefinition {
+    Name("ArdiaMagnifyArea")
+
+    AsyncFunction("devMagnify") { (windowId: String, x: Double, y: Double, steps: [[String: Any]]) -> [String: Any] in
+      #if DEBUG
+      return MagnifyArea.devMagnify(windowId: windowId, x: x, y: y, steps: steps)
+      #else
+      return ["error": "DEV builds only"]
+      #endif
+    }.runOnQueue(.main)
+
+    View(MagnifyArea.self) {
+      Prop("enabled") { (view: MagnifyArea, on: Bool) in view.enabled = on }
+      Events("onMagnify")
+    }
+  }
+}
+
+final class MagnifyArea: ExpoView {
+  let onMagnify = EventDispatcher()
+  var enabled = true
+  private static let areas = NSHashTable<MagnifyArea>.weakObjects()
+  private static weak var owner: MagnifyArea?
+  private static var claimed = false
+  private static var total = 0.0
+
+  required init(appContext: AppContext? = nil) {
+    super.init(appContext: appContext)
+    _ = installMagnifyMonitor
+  }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    if window != nil { Self.areas.add(self) } else { Self.areas.remove(self) }
+  }
+
+  private static func area(at location: NSPoint, in window: NSWindow) -> MagnifyArea? {
+    guard let hit = window.contentView?.superview?.hitTest(location) else { return nil }
+    return areas.allObjects.first { $0.enabled && $0.window === window && !$0.isHiddenOrHasHiddenAncestor && hit.isDescendant(of: $0) }
+  }
+
+  static func route(window: NSWindow?, location: NSPoint, phase: NSEvent.Phase, magnification: Double) -> Bool {
+    if phase.contains(.began) {
+      owner = window.flatMap { area(at: location, in: $0) }
+      claimed = owner != nil
+      total = 0
+    }
+    guard claimed else { return false }
+    total += magnification
+    let finished = phase.contains(.ended) || phase.contains(.cancelled)
+    let name = phase.contains(.ended) ? "ended" : phase.contains(.cancelled) ? "cancelled" : phase.contains(.began) ? "began" : "changed"
+    owner?.onMagnify(["phase": name, "magnification": total])
+    if finished {
+      owner = nil
+      claimed = false
+    }
+    return true
+  }
+
+  static func devMagnify(windowId: String, x: Double, y: Double, steps: [[String: Any]]) -> [String: Any] {
+    guard let window = WindowManager.shared.windows[windowId], let content = window.contentView else { return ["error": "no window \(windowId)"] }
+    let location = content.convert(NSPoint(x: x, y: content.isFlipped ? y : content.bounds.height - y), to: nil)
+    let hit = content.superview?.hitTest(location)
+    let phases: [String: NSEvent.Phase] = ["began": .began, "changed": .changed, "ended": .ended, "cancelled": .cancelled]
+    var claims: [Bool] = []
+    for step in steps {
+      let phase = phases[step["phase"] as? String ?? ""] ?? .changed
+      claims.append(route(window: window, location: location, phase: phase, magnification: step["magnification"] as? Double ?? 0))
+    }
+    return ["claimed": claims, "hit": hit.map { String(describing: type(of: $0)) } ?? "nil"]
+  }
+}
+
+let installMagnifyMonitor: Void = {
+  _ = NSEvent.addLocalMonitorForEvents(matching: [.magnify]) { event in
+    MagnifyArea.route(window: event.window, location: event.locationInWindow, phase: event.phase, magnification: Double(event.magnification)) ? nil : event
   }
 }()
 
@@ -1324,6 +1458,103 @@ let installTextFieldSelectAll: Void = {
   }
   class_addMethod(NSTextField.self, #selector(NSText.selectAll(_:)), imp_implementationWithBlock(block), "v@:@")
 }()
+
+let installInputSourceKeys: Void = {
+  let processKeyBindings = NSSelectorFromString("processInputKeyBindings:")
+  let keyDown = #selector(NSResponder.keyDown(with:))
+  guard NSTextInputContext.responds(to: processKeyBindings), let method = class_getInstanceMethod(NSTextView.self, keyDown) else { return }
+  typealias KeyDown = @convention(c) (NSTextView, Selector, NSEvent) -> Void
+  typealias ProcessKeyBindings = @convention(c) (AnyClass, Selector, NSEvent) -> ObjCBool
+  let original = unsafeBitCast(method_getImplementation(method), to: KeyDown.self)
+  let process = unsafeBitCast(NSTextInputContext.method(for: processKeyBindings), to: ProcessKeyBindings.self)
+  let inputSourceKeys: Set<UInt16> = [UInt16(kVK_JIS_Eisu), UInt16(kVK_JIS_Kana)]
+  let block: @convention(block) (NSTextView, NSEvent) -> Void = { view, event in
+    if inputSourceKeys.contains(event.keyCode) {
+      _ = process(NSTextInputContext.self, processKeyBindings, event)
+    } else {
+      original(view, keyDown, event)
+    }
+  }
+  let imp = imp_implementationWithBlock(block)
+  if !class_addMethod(NSTextView.self, keyDown, imp, method_getTypeEncoding(method)) { method_setImplementation(method, imp) }
+}()
+
+let installWindowMoveFallback: Void = {
+  guard WindowMove.replacesNativeDrag else { return }
+  let selector = #selector(NSWindow.performDrag(with:))
+  guard let method = class_getInstanceMethod(NSWindow.self, selector) else { return }
+  typealias PerformDrag = @convention(c) (NSWindow, Selector, NSEvent) -> Void
+  let original = unsafeBitCast(method_getImplementation(method), to: PerformDrag.self)
+  let block: @convention(block) (NSWindow, NSEvent) -> Void = { window, event in
+    if !WindowMove.follow(window, from: event) { original(window, selector, event) }
+  }
+  method_setImplementation(method, imp_implementationWithBlock(block))
+}()
+
+enum WindowMove {
+  static let replacesNativeDrag = ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 27, minorVersion: 0, patchVersion: 0))
+  private static var following = false
+  private static let staleAfter: TimeInterval = 0.012
+
+  static func follow(_ window: NSWindow, from event: NSEvent) -> Bool {
+    guard !following, event.type == .leftMouseDown, event.clickCount < 2,
+          window.isMovable, !window.styleMask.contains(.fullScreen), window.isVisible
+    else { return false }
+    following = true
+    defer { following = false }
+    let start = screenPoint(event)
+    let origin = window.frame.origin
+    var wasActive = NSApp.isActive
+    func move(to event: NSEvent) {
+      let target = place(window, origin, start, screenPoint(event))
+      guard !near(window.frame.origin, target) else { return }
+      window.setFrameOrigin(target)
+    }
+    while window.isVisible {
+      if NSApp.isActive { wasActive = true } else if wasActive { return true }
+      guard var next = nextGestureEvent() else {
+        if NSEvent.pressedMouseButtons & 1 == 0 { return true }
+        continue
+      }
+      var latest: NSEvent?
+      while next.type == .leftMouseDragged, next.windowNumber == window.windowNumber {
+        latest = next
+        guard ProcessInfo.processInfo.systemUptime - next.timestamp > staleAfter,
+              let queued = NSApp.nextEvent(matching: gestureEvents, until: .distantPast, inMode: .eventTracking, dequeue: true)
+        else { break }
+        next = queued
+      }
+      if next.type == .leftMouseUp, next.windowNumber == window.windowNumber { latest = next }
+      if let latest { move(to: latest) }
+      if next.type != .leftMouseDragged || next.windowNumber != window.windowNumber {
+        NSApp.postEvent(next, atStart: true)
+        return true
+      }
+    }
+    return true
+  }
+
+  private static let gestureEvents: NSEvent.EventTypeMask = [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
+
+  private static func nextGestureEvent() -> NSEvent? {
+    let pressed = NSEvent.pressedMouseButtons & 1 != 0
+    return NSApp.nextEvent(matching: gestureEvents, until: pressed ? Date(timeIntervalSinceNow: 0.1) : .distantPast, inMode: .eventTracking, dequeue: true)
+  }
+
+  private static func place(_ window: NSWindow, _ origin: NSPoint, _ start: NSPoint, _ pointer: NSPoint) -> NSPoint {
+    let target = NSRect(origin: NSPoint(x: origin.x + pointer.x - start.x, y: origin.y + pointer.y - start.y), size: window.frame.size)
+    guard let screen = NSScreen.screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) ?? window.screen else { return NSPoint(x: target.minX.rounded(), y: target.minY.rounded()) }
+    let constrained = window.constrainFrameRect(target, to: screen)
+    return NSPoint(x: constrained.minX.rounded(), y: (constrained.maxY - target.height).rounded())
+  }
+
+  private static func screenPoint(_ event: NSEvent) -> NSPoint {
+    guard let location = event.cgEvent?.location, let primary = NSScreen.screens.first else { return NSEvent.mouseLocation }
+    return NSPoint(x: location.x, y: primary.frame.maxY - location.y)
+  }
+
+  private static func near(_ a: NSPoint, _ b: NSPoint) -> Bool { abs(a.x - b.x) < 0.5 && abs(a.y - b.y) < 0.5 }
+}
 
 let installScrollViewInsetFix: Void = {
   guard let cls = NSClassFromString("RCTCustomScrollView"),

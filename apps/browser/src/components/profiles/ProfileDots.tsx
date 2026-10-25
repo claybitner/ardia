@@ -9,6 +9,7 @@ import { useIsIncognito } from "../../store/hooks";
 import { usePagerPages, type PagerPage } from "../layout/profilePager";
 import { SIDEBAR_FOOTER_DOWNLOADS } from "../layout/windowLayout";
 import { useHover } from "../primitives";
+import { TooltipAbove } from "../TooltipAbove";
 import { profileSymbol } from "./icons";
 
 export const PROFILE_DOTS_HEIGHT = 41;
@@ -20,6 +21,7 @@ const BAND = 28;
 const SELECTED = 0.85;
 const HOVERED = 0.4;
 const IDLE = 0.2;
+const DOT_CENTER_TO_TOOLTIP = 18.25;
 
 export function useProfileDotsShown() {
   const incognito = useIsIncognito();
@@ -70,6 +72,8 @@ function Dot({ id, windowId, page, pos, icons }: { id: string; windowId: string;
   const symbol = profileSymbol(profile?.icon ?? null);
   const color = theme.dark ? "#FFFFFF" : "#000000";
   const { hovered, hoverProps } = useHover();
+  const [pressed, setPressed] = useState(false);
+  if (pressed && !hovered) setPressed(false);
   const rest = icons ? (hovered ? 0.85 : 0.55) : hovered ? HOVERED : IDLE;
   const opacity = page
     ? pos.interpolate({ inputRange: [page.slot - 1, page.slot, page.slot + 1], outputRange: [rest, SELECTED, rest], extrapolate: "clamp" })
@@ -78,8 +82,17 @@ function Dot({ id, windowId, page, pos, icons }: { id: string; windowId: string;
     ? pos.interpolate({ inputRange: [page.slot - 1, page.slot, page.slot + 1], outputRange: [0, SELECTED, 0], extrapolate: "clamp" })
     : 0;
   return (
-    <View {...hoverProps} tooltip={name}>
-      <Pressable accessibilityRole="button" accessibilityLabel={name} accessibilityState={{ selected }} onPress={() => switchProfile(windowId, id, true)}>
+    <View {...hoverProps} tooltip={icons ? name : undefined}>
+      {icons ? null : <TooltipAbove text={name} active={hovered && !pressed} centerX={CELL / 2} bottom={BAND / 2 + DOT_CENTER_TO_TOOLTIP} />}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={name}
+        accessibilityState={{ selected }}
+        onPress={() => {
+          setPressed(true);
+          switchProfile(windowId, id, true);
+        }}
+      >
         <View style={{ width: icons ? ICON_CELL : CELL, height: BAND, alignItems: "center", justifyContent: "center" }}>
           {icons ? (
             <>

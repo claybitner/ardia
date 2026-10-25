@@ -3,8 +3,51 @@ import { Pressable, Text, View } from "react-native";
 import { useTheme } from "../../../lib/theme";
 import { useBrowser } from "../../../store/browser";
 import { tabLayoutOf } from "../../../store/model";
-import type { Settings } from "../../../store/settings";
+import { peekModifierOf, splitLinkModifierOf, type PeekModifier, type Settings, type SplitLinkModifier } from "../../../store/settings";
 import { Checkbox, Group, PopUp, Row, SectionHeader, Toggle, useFormColors } from "../controls";
+import { setting } from "../settingsIndex";
+
+const PEEK_WITH: { value: PeekModifier; title: string }[] = [
+  { value: "shift", title: "⇧-click" },
+  { value: "alt", title: "⌥-click" },
+  { value: "off", title: "Off" },
+];
+
+const SPLIT_WITH: { value: SplitLinkModifier; title: string }[] = [
+  { value: "altShift", title: "⌥⇧-click" },
+  { value: "alt", title: "⌥-click" },
+];
+
+const withNote = (anchor: string, note: string | null) => (note ? `${setting(anchor)?.description ?? ""} ${note}`.trim() : undefined);
+
+function LinkKeys({ settings, update }: { settings: Settings; update: (patch: Partial<Settings>) => void }) {
+  const peekWith = peekModifierOf(settings);
+  const splitWith = splitLinkModifierOf(settings);
+  const peekOptions = PEEK_WITH.map((o) => (o.value === "alt" && splitWith === "alt" ? { ...o, title: "⌥-click (split view moves to ⌥⇧-click)" } : o));
+  const splitOptions = SPLIT_WITH.map((o) => (o.value === "alt" && peekWith === "alt" ? { ...o, title: "⌥-click (Peek moves to ⇧-click)" } : o));
+  return (
+    <Group>
+      <Row anchor="tabs.peekModifier" description={withNote("tabs.peekModifier", splitWith === "alt" ? "⌥-click opens a split now: choosing it here moves split view back to ⌥⇧-click." : null)}>
+        <PopUp value={peekWith} options={peekOptions} onChange={(peekModifier) => update({ peekModifier })} />
+      </Row>
+      <Row anchor="tabs.splitLinkModifier" description={withNote("tabs.splitLinkModifier", peekWith === "alt" ? "⌥-click peeks now: choosing it here moves Peek back to ⇧-click." : null)}>
+        <PopUp value={splitWith} options={splitOptions} onChange={(splitLinkModifier) => update({ splitLinkModifier })} />
+      </Row>
+    </Group>
+  );
+}
+
+const NEW_TABS_DOWN: { value: Settings["newTabPosition"]; title: string }[] = [
+  { value: "bottom", title: "At the bottom" },
+  { value: "top", title: "At the top" },
+  { value: "nextToCurrent", title: "Below the current tab" },
+];
+
+const NEW_TABS_ACROSS: { value: Settings["newTabPosition"]; title: string }[] = [
+  { value: "bottom", title: "On the right" },
+  { value: "top", title: "On the left" },
+  { value: "nextToCurrent", title: "Next to the current tab" },
+];
 
 const CLEAN_UP = [
   { value: "12", title: "12 hours" },
@@ -33,6 +76,7 @@ export function TabsPane() {
       <Group style={{ marginTop: 14 }}>
         {toggle("hideToolbarWhileScrolling", "tabs.hideToolbarWhileScrolling")}
         {!top && toggle("showSidebarButton", "tabs.showSidebarButton")}
+        {!top && toggle("balancedTopApps", "tabs.balancedTopApps")}
       </Group>
 
       <SectionHeader title="General" />
@@ -48,9 +92,10 @@ export function TabsPane() {
             minWidth={160}
           />
         </Row>
-        <Row anchor="tabs.newTabPosition" title={top ? "Add new tabs to the left" : "Add new tabs to the top"}>
-          <Toggle value={settings.newTabPosition === "top"} onChange={(v) => update({ newTabPosition: v ? "top" : "bottom" })} />
+        <Row anchor="tabs.newTabPosition">
+          <PopUp value={settings.newTabPosition} options={top ? NEW_TABS_ACROSS : NEW_TABS_DOWN} onChange={(newTabPosition) => update({ newTabPosition })} minWidth={190} />
         </Row>
+        {toggle("shareTabsAcrossWindows", "tabs.shareTabsAcrossWindows")}
         {toggle("warnBeforeClosingLastTab", "tabs.warnBeforeClosingLastTab")}
         {toggle("tabReorderHaptics", "tabs.tabReorderHaptics")}
         {toggle("extendWebsiteColor", "tabs.extendWebsiteColor")}
@@ -58,6 +103,9 @@ export function TabsPane() {
         {toggle("autoPictureInPicture", "tabs.autoPictureInPicture")}
         {toggle("videoUpscaling", "tabs.videoUpscaling")}
       </Group>
+
+      <SectionHeader title="Links" />
+      <LinkKeys settings={settings} update={update} />
 
       <SectionHeader title="Tab groups" />
       <Group>

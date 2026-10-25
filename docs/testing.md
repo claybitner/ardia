@@ -31,6 +31,7 @@ holds the rest.
 | Hidden panes | `node apps/browser/scripts/hidden-pane-test.mjs <Debug app>` | What changes while a tab is hidden (URL, title, loading, zoom, find bar, a permission prompt) is on screen the moment it is shown |
 | Hover layout | `node apps/browser/scripts/hover-shift-test.mjs <Debug app>` | Hovering moves nothing: every hover-tracked view in the sidebar, the tab strip and the downloads popover (below) |
 | Sidebar clicks | `node apps/browser/scripts/sidebar-click-test.mjs <Debug app>` | One click opens a tab or pinned tile: in the frame its hover card appears, under another tile's appearing card, after a New Tab and after closing a pinned tab (0.2.39-nightly.5: tabs needed two clicks) |
+| Onboarding | `node apps/browser/scripts/onboarding-test.mjs <Debug app>` | No text field sits behind the onboarding card, a click on the first row's checkbox toggles it, another window keeps its New Tab field meanwhile, and the New Tab field is back and focused once it ends, in a bar of the same height (the hidden New Tab field took the first row's cursor and its checkbox clicks) |
 | Sidebar scroll | `node apps/browser/scripts/sidebar-scroll-test.mjs <Debug app>` | The pinned tiles hold still while the tabs scroll (Dia's dock), with the address field in the sidebar and without: a row dragged onto a tile after a scroll pins it there, selecting a tile while scrolled leaves the list put, and a dock too tall for the window scrolls with the tabs |
 | Sync | `node packages/sync/scripts/e2e.mjs <Debug app>` | Two and three hidden instances through one folder (`docs/sync.md`) |
 | Import | `node packages/import/scripts/e2e.mjs <Debug app> <scratch dir>` | Cookies, addresses and cards from a fake Chrome home (`packages/import/README.md`) |
@@ -94,10 +95,13 @@ make an instance a test instance; the rest are hooks for one test.
   Full screen is acted out (no new Space); windows answer NO to `-[NSWindow isOccluded]`, so a covered
   window shows a tab at once instead of after Chrome's 1 s delay, with `--disable-backgrounding-occluded-windows`;
   PiP windows stay at alpha 0 and click-through; the drag preview stays above its own window only.
-- **Media:** `--mute-audio`, no intro music, `--use-fake-device-for-media-stream` with the microphone kept on a fake
+- **Media:** `--mute-audio` (Chrome then reports no tab as audible, so the speaker never lights; the ArdiaCore
+  acceptance run sets `ARDIA_ALLOW_AUDIO=1` with `--disable-audio-output`, so Chrome still hears its -60 dBFS fixtures and the speakers get nothing), no intro music, `--use-fake-device-for-media-stream` with the microphone kept on a fake
   input (`ac_fake_media.mm`), and `--disable-modal-animations` (a locked screen never ends a dialog's close animation).
 - **Other:** macOS re-auth prompts never show; requests are refused unless `ARDIA_TEST_REAUTH=granted` in a build that
-  honours it (above).
+  honours it (above). Nothing system-wide changes: Set as Default (onboarding, whose checkbox starts unticked, and
+  Settings), Chrome's own default browser, scheme and file type setters, Add to Dock and Launch at Login are no-ops
+  that log a line (`ArdiaSystem`, `chromium-background-instance-no-default-handlers.patch`).
 
 A scratch `ARDIA_DATA_DIR` holds Chrome's user data and the app's documents, its defaults, keychain items and
 Sparkle state (`ACIsolation.h`); Chrome gets `--use-mock-keychain`; update checks are off without

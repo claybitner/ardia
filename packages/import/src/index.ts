@@ -34,6 +34,7 @@ export type BrowserProfile = {
   isDefault: boolean;
   available: ImportKind[];
   spaces?: SpaceSummary[];
+  tabsNeedKey?: boolean;
 };
 
 export type BrowserSource = {
@@ -45,10 +46,11 @@ export type BrowserSource = {
   requiresExport: boolean;
   needsKeychain: boolean;
   needsFullDiskAccess?: boolean;
+  keychainService?: string;
   profiles: BrowserProfile[];
 };
 
-export type BookmarkRole = "toolbar" | "other" | "mobile" | "menu" | "readingList";
+export type BookmarkRole = "toolbar" | "other" | "mobile" | "menu" | "readingList" | "liveGitHubPullRequests" | "liveBitbucketPullRequests";
 
 export type BookmarkNode = {
   type: "folder" | "url";

@@ -3,7 +3,7 @@ import type { StateCreator } from "zustand";
 import { fromLegacyUrl } from "../legacy";
 import { startNavigation } from "../lib/earlyNavigate";
 import type { BrowserState } from "./browser";
-import { leaveGroups, syncGroupOrder } from "./groups";
+import { ancestorIds, closedGroupInfo, innermostGroupOf, leaveGroups, syncGroupOrder } from "./groups";
 import {
   activeTabId,
   closesWindow,
@@ -21,13 +21,13 @@ import {
   wake,
   without,
 } from "./model";
-import { forgetOpeners, insertionIndex, openerSuccessor, switchKeepsOpeners } from "./openers";
+import { forgetOpeners, insertionIndex, nextToActive, openerSuccessor, switchKeepsOpeners } from "./openers";
 import { groupWithOpener, onUrlChange, pruneSelection, samePage } from "./organize";
 import { searchUrlPrefix } from "./settings";
 import { mainWindowFor } from "./small";
 import { leavesEmptyWindow } from "./newTabBar";
 import { holderOf, swapPinPage, withSharedFamily } from "./pinShare";
-import { removeFromSplits, splitOf } from "./splits";
+import { removeFromSplits, splitOf, withPinnedPanes } from "./splits";
 import type { BrowserWindow, ClosedTab, Tab, TabLive, TabSnapshot } from "./types";
 
 export type NewTabOptions = {
@@ -40,6 +40,7 @@ export type NewTabOptions = {
   snapshot?: Partial<TabSnapshot>;
   index?: number;
   wakeAdoptId?: string;
+  newTabCommand?: boolean;
 };
 
 let pinHandoff: (tabId: string, commit: () => void) => void = (_, commit) => commit();
@@ -85,7 +86,7 @@ function pinnedInsertionIndex(s: BrowserState, w: BrowserWindow): number {
 export function activated(s: BrowserState, id: string, shareLivePins = true): Partial<BrowserState> {
   const tab = s.tabs[id];
   const w = tab && s.windows[tab.windowId];
-  if (!tab || !w) return {};
+  if (!tab || !w || s.peeks[w.id]?.tabId === id) return {};
   const lazy = !!tab.url && !tab.navigation && !tab.adoptId;
   const holder = lazy && shareLivePins ? holderOf(s, id) : undefined;
   const frozen = lazy && (!!holder || !!tab.pageIn);
@@ -122,7 +123,8 @@ export function removeTabs(s: BrowserState, ids: string[], record: boolean): Bro
       w.tabIds.forEach((id, index) => {
         const t = s.tabs[id];
         if (!t || !gone.has(id) || (!t.url && !t.pinned)) return;
-        const group = Object.values(s.groups).find((g) => g.tabIds.includes(id));
+        const group = innermostGroupOf(s.groups, id);
+        const parents = group ? ancestorIds(s.groups, group.id).map((x) => closedGroupInfo(s.groups[x]!)) : [];
         closed.push({
           kind: "tab",
           id: newId("ct"),
@@ -131,7 +133,8 @@ export function removeTabs(s: BrowserState, ids: string[], record: boolean): Bro
           ...(pendingRestore(t) ? { restoreFrom: pendingRestore(t) } : {}),
           windowId: w.id,
           index,
-          group: group ? { id: group.id, name: group.name, icon: group.icon, color: group.color } : null,
+          group: group ? closedGroupInfo(group) : null,
+          ...(parents.length ? { parents } : {}),
           closedAt: now,
           ...(w.kind === "small" ? { small: true } : {}),
         });
@@ -193,7 +196,7 @@ function adoptOrphans(tabs: Record<string, Tab>, before: Record<string, Tab>, go
 }
 
 export function unloadPinnedTabs(s: BrowserState, requested: string[]): BrowserState {
-  const ids = withSharedFamily(s, requested.filter((id) => inPinnedContainer(s, id)));
+  const ids = withSharedFamily(s, withPinnedPanes(s, requested.filter((id) => inPinnedContainer(s, id))));
   const closing = new Set([...requested, ...ids]);
   const pinned = ids.filter((id) => inPinnedContainer(s, id));
   if (!pinned.length) return s;
@@ -219,7 +222,7 @@ export function unloadPinnedTabs(s: BrowserState, requested: string[]): BrowserS
     tabs,
     live,
     find: without(s.find, gone),
-    splits: removeFromSplits(s.splits, gone),
+    splits: removeFromSplits(s.splits, new Set(pinned.filter((id) => !splitOf(s, id)?.tabIds.every((pane) => gone.has(pane))))),
     selection: pruneSelection(s.selection, gone),
     closedTabs: closed.length ? [...s.closedTabs, ...closed].slice(-MAX_CLOSED_TABS) : s.closedTabs,
   };
@@ -286,7 +289,7 @@ export function withNewTab(s: BrowserState, windowId: string, o: NewTabOptions =
   tabIds.splice(Math.min(at, tabIds.length), 0, tab.id);
   const window: BrowserWindow = {
     ...w,
-    tabIds: pinnedFirst(tabIds, tabs),
+    tabIds: pinnedFirst(tabIds, tabs, s.groups),
     activeTabIds: w.activeTabIds[profileId] ? w.activeTabIds : { ...w.activeTabIds, [profileId]: tab.id },
   };
   let next: BrowserState = {
@@ -316,8 +319,10 @@ export const createTabsSlice: StateCreator<BrowserState, [], [], TabsSlice> = (s
       return get().newTab(main, { ...options, profileId, index: undefined });
     }
     if (options?.url && !options.adoptId && openOutsideTab(resolveInput(fromLegacyUrl(options.url.trim()), searchUrlPrefix(get().settings)), windowId)) return "";
-    let [next, id] = withNewTab(get(), windowId, options);
+    const beside = options?.newTabCommand && !options.openerId ? nextToActive(get(), windowId, options.profileId) : undefined;
+    let [next, id] = withNewTab(get(), windowId, beside ? { ...options, ...beside } : options);
     if (id && options?.openerId) next = groupWithOpener(next, id, options.openerId, !!options.background);
+    else if (id && beside && !inPinnedContainer(next, beside.openerId)) next = groupWithOpener(next, id, beside.openerId, false);
     set(next);
     return id;
   },
@@ -327,6 +332,7 @@ export const createTabsSlice: StateCreator<BrowserState, [], [], TabsSlice> = (s
     const tab = s.tabs[id];
     const w = tab && s.windows[tab.windowId];
     if (!tab || !w) return;
+    if (s.peeks[w.id]?.tabId === id) return get().closePeek(w.id);
     if (inPinnedContainer(s, id)) return set(unloadPinnedTabs(s, [id]));
     if (leavesEmptyWindow(s, id)) return set(removeTabs(withNewTab(s, w.id)[0], [id], true));
     if (closesWindow(s, id)) return get().closeWindow(w.id);

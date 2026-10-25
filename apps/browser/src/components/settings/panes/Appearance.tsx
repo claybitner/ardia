@@ -59,6 +59,7 @@ function ProfileSwitcherPicker() {
 
 function AddressBarPicker() {
   const addressBar = useBrowser((s) => s.settings.addressBar);
+  const placement = useBrowser((s) => s.settings.commandBarPlacement);
   const topTabs = useBrowser((s) => tabLayoutOf(s) === "top");
   const choose = (value: Settings["addressBar"]) => useBrowser.getState().updateSettings({ addressBar: value });
   return (
@@ -75,6 +76,19 @@ function AddressBarPicker() {
         <AddressBarChoice value="toolbar" title="In the toolbar" selected={addressBar !== "sidebar"} onPress={() => choose("toolbar")} />
         <AddressBarChoice value="sidebar" title="In the sidebar" selected={addressBar === "sidebar"} onPress={() => choose("sidebar")} />
       </View>
+      <Group style={{ marginTop: 14 }}>
+        <Row anchor="appearance.commandBarPlacement">
+          <PopUp
+            value={placement}
+            options={[
+              { value: "field", title: "At the address" },
+              { value: "centred", title: "In the centre" },
+            ]}
+            onChange={(v) => useBrowser.getState().updateSettings({ commandBarPlacement: v })}
+            minWidth={160}
+          />
+        </Row>
+      </Group>
     </>
   );
 }
